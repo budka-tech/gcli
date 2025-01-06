@@ -13,27 +13,24 @@ import (
 )
 
 type Params[T any] struct {
-	Name          string
 	Host          iport.Host
 	ClientFactory func(*grpc.ClientConn) T
 	Env           *envo.Env
 	DialOptions   []grpc.DialOption
-	Ports         iport.Ports
-	Logger        logit.Logger
+	Ports         *iport.Ports
 	UseTLS        bool
 	Timeout       time.Duration
+	Logger        logit.Logger
 }
 
 type GCli[T any] struct {
-	name          string
-	host          iport.Host
+	Con           T
+	host          string
 	listener      net.Listener
-	Cli           T
 	conn          *grpc.ClientConn
 	clientFactory func(*grpc.ClientConn) T
 	dialOptions   []grpc.DialOption
 	env           *envo.Env
-	ports         iport.Ports
 	timeout       time.Duration
 	logger        logit.Logger
 }
@@ -48,13 +45,12 @@ func NewGClient[T any](params *Params[T]) *GCli[T] {
 		dialOptions = append(dialOptions, grpc.WithInsecure())
 	}
 
+	host := params.Ports.FormatServiceTCP(params.Host)
+
 	return &GCli[T]{
-		name:          params.Name,
-		host:          params.Host,
+		host:          host,
 		clientFactory: params.ClientFactory,
-		env:           params.Env,
 		dialOptions:   dialOptions,
-		ports:         params.Ports,
 		logger:        params.Logger,
 		timeout:       params.Timeout,
 	}
@@ -69,23 +65,22 @@ func (n *GCli[T]) Init(ctx context.Context) error {
 	for {
 		select {
 		case <-timeoutCtx.Done():
-			return fmt.Errorf("превышено время ожидания при попытке подключения к %s: %w", n.name, timeoutCtx.Err())
+			return fmt.Errorf("превышено время ожидания при попытке подключения к %s: %w", n.host, timeoutCtx.Err())
 		default:
-			host := n.ports.FormatServiceTCP(n.host)
-			n.logger.Infof(ctx, "Попытка подключения к сервису %s по адресу %s", n.name, host)
+			n.logger.Infof(ctx, "попытка подключения к сервису %s", n.host)
 
-			conn, err := grpc.DialContext(timeoutCtx, host, n.dialOptions...)
+			conn, err := grpc.DialContext(timeoutCtx, n.host, n.dialOptions...)
 			if err != nil {
-				n.logger.Warnf(ctx, "Не удалось подключиться к %s: %v. Повторная попытка через %v...", n.name, err, backoff)
+				n.logger.Warnf(ctx, "не удалось подключиться к %s: %v. Повторная попытка через %v...", n.host, err, backoff)
 				time.Sleep(backoff)
 				backoff = min(backoff*2, maxBackoff)
 				continue
 			}
 
 			n.conn = conn
-			n.Cli = n.clientFactory(conn)
+			n.Con = n.clientFactory(conn)
 
-			n.logger.Infof(ctx, "Успешное подключение к сервису %s по адресу %s", n.name, host)
+			n.logger.Infof(ctx, "успешное подключение к сервису %s", n.host)
 
 			go n.monitorConnection(ctx)
 
@@ -105,9 +100,9 @@ func (n *GCli[T]) monitorConnection(ctx context.Context) {
 		case <-ticker.C:
 			state := n.conn.GetState()
 			if state == connectivity.TransientFailure || state == connectivity.Shutdown {
-				n.logger.Errorf(ctx, "Соединение с сервисом %s потеряно. Попытка переподключения", n.name)
+				n.logger.Errorf(ctx, "соединение с сервисом %s потеряно. Попытка переподключения", n.host)
 				if err := n.Init(ctx); err != nil {
-					n.logger.Errorf(ctx, "Не удалось переподключиться к сервису %s: %v", n.name, err)
+					n.logger.Errorf(ctx, "не удалось переподключиться к сервису %s: %v", n.host, err)
 				}
 				return
 			}
