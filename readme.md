@@ -1,5 +1,5 @@
 ```bash
-go get github.com/budka-tech/gcli@latest
+go get -u github.com/budka-tech/gcli
 ```
 
 # GCLI - gRPC Client Library
